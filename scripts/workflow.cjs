@@ -29,7 +29,13 @@ const activityLabel = new RegExp(`活动\\s*ID\\s*[:：]\\s*${activityId}(?!\\d)
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, timeout = 30000) { const end = Date.now() + timeout; let last; do { try { const result = await fn(); if (result) return result; } catch (e) { last = e; } await sleep(250); } while (Date.now() < end); throw Error(`State wait timed out${last ? ': ' + last.message : ''}`); }
 async function frame(part) { return until(() => page.frames().find(f => f !== page.mainFrame() && f.url().includes(part))); }
-async function identity() { await until(async () => { const label = page.locator('.acctinfo-container .txt'); return await label.count() === 1 && (await label.innerText()).trim() === account; }, 20000); }
+async function identity() {
+  const label = page.locator('.acctinfo-container .txt');
+  await label.waitFor({ state: 'visible', timeout: 20000 }).catch(error => {
+    throw Error('无法读取商家账号，请检查登录状态和验证码', { cause: error });
+  });
+  if ((await label.innerText()).trim() !== account) throw Error('商家账号与本机配置不符，请核对登录账号');
+}
 async function shot(name) { await page.screenshot({ path: path.join(out, name + '.png'), timeout: 10000 }); }
 async function closeMessages() { const close = page.locator('i.roo-icon-close[style*="position: fixed"]'); if (await close.isVisible().catch(() => false)) { await close.click(); await close.waitFor({ state: 'hidden' }); } }
 async function messages() {
@@ -130,18 +136,16 @@ async function exportCsv(label, d) {
   step(label + '-csv-downloaded', { count: ids.length, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
   await popup.close(); await closeMessages(); return { rows, ids };
 }
-async function prepareCancel({ checkRegistration = false } = {}) {
+async function prepareCancel() {
   if (state.cancelIntent) throw Error('Existing cancellation intent; inspect its receipt before another operation');
-  if (checkRegistration) {
-    await openRegistrationForm();
-    state.registrationChecked = true;
-    save();
-  }
+  await openRegistrationForm();
+  state.registrationChecked = true;
+  save();
   const d = await details({ allowEmpty: true });
   if (!d) {
     state.cancelIds = []; state.cancelCount = 0;
     state.cancelIntent = { outcome: 'confirmed', skipped: true, count: 0 };
-    save(); step('cancel-not-needed', { count: 0 }); return false;
+    save(); step('cancel-not-needed', { count: 0 }); return;
   }
   await until(async () => /共\s*\d+\s*条数据/.test(await d.locator('body').innerText()));
   const total = Number((await d.locator('body').innerText()).match(/共\s*(\d+)\s*条数据/)[1]);
@@ -154,7 +158,6 @@ async function prepareCancel({ checkRegistration = false } = {}) {
   await d.getByRole('button', { name: '确定', exact: true }).click();
   await d.getByRole('button', { name: '确认取消', exact: true }).waitFor();
   await shot('cancel-ready'); step('cancel-ready', { count: ids.length });
-  return true;
 }
 async function cancel() {
   if (state.cancelIntent?.skipped) { step('cancel-not-needed', { count: 0 }); return; }
@@ -327,6 +330,6 @@ async function resultDetails() {
   state.failedStores = failed; save(); step('registration-details-verified', { successful: successful.length, failed: failed.length, reasons: [...new Set(failed.map(r => r['失败原因']))] });
   await closeMessages();
 }
-return { identity, frame, shot, closeMessages, prepareCancel, cancel, verifyCancel, prepareRegister, register, confirmRegister, verifyRegister, resultDetails, verify };
+return { identity, shot, prepareCancel, cancel, verifyCancel, prepareRegister, register, confirmRegister, verifyRegister, resultDetails, verify };
 }
 module.exports = { createWorkflow, activityTitle, messageMatchesActivity };

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { parseCsv, storeIds, originalStoreDiff } = require('../data.cjs');
 const { atomicJson, acquireLock, createRunState } = require('../run-state.cjs');
 const { createWorkflow, activityTitle, messageMatchesActivity } = require('../workflow.cjs');
@@ -70,24 +71,25 @@ test('an unknown submission blocks a fresh run and permits only the original rec
 });
 
 test('a saved run cannot be rebound to a different account', t => {
-  const home = sandbox(t); const args = { home, out: path.join(home, 'run'), brand: 'lexinyi', account: 'demo-owner', activityId: '91000123', inventory: 260, phase: 'preflight' };
+  const home = sandbox(t); const args = { home, out: path.join(home, 'run'), brand: 'lexinyi', account: 'demo-owner', activityId: '91000123', inventory: 260, phase: 'execute' };
   createRunState(args).save();
   assert.throws(() => createRunState({ ...args, account: 'different-owner' }), /不一致/);
 });
 
-test('argument parsing defaults to preflight and rejects ambiguous or repeated submit flags', () => {
-  assert.equal(parseArgs(['--brand', 'lexinyi']).phase, 'preflight');
+test('argument parsing defaults to execute and rejects the removed preflight phase', () => {
+  assert.deepEqual(parseArgs([]), { phase: 'execute' });
   assert.deepEqual(parseArgs(['--brand', 'lexinyi', '--activity-id', '91000123', '--inventory', '260']), {
-    brand: 'lexinyi', phase: 'preflight', 'activity-id': '91000123', inventory: '260',
+    brand: 'lexinyi', phase: 'execute', 'activity-id': '91000123', inventory: '260',
   });
-  assert.throws(() => parseArgs([]), /必须指定/);
-  assert.throws(() => parseArgs(['--brand', 'lexinyi', '--phase', 'preflight', '--phase', 'execute']), /重复参数/);
+  assert.throws(() => parseArgs(['--brand', 'unknown']), /中台/);
+  assert.throws(() => parseArgs(['--phase', 'preflight']), /执行阶段/);
+  assert.throws(() => parseArgs(['--brand', 'lexinyi', '--phase', 'execute', '--phase', 'check-scope']), /重复参数/);
   assert.throws(() => parseArgs(['--brand', 'lexinyi', '--unknown', 'execute']), /参数格式/);
 });
 
 test('activity and inventory can change for a new run while recovery keeps the original values', t => {
   const home = sandbox(t);
-  const args = { home, out: path.join(home, 'runs', 'original'), brand: 'lexinyi', account: 'demo-owner', phase: 'preflight' };
+  const args = { home, out: path.join(home, 'runs', 'original'), brand: 'lexinyi', account: 'demo-owner', phase: 'execute' };
   const defaults = { activityId: '91000123', inventory: 260 };
   const first = createRunState({ ...args, defaults });
   assert.equal(first.state.activityId, '91000123');
@@ -100,12 +102,41 @@ test('activity and inventory can change for a new run while recovery keeps the o
   assert.throws(() => createRunState({ ...args, ...changed }), /活动 ID 与原运行不一致/);
   assert.throws(() => createRunState({ ...args, inventory: 320 }), /库存与原运行不一致/);
   const fresh = { ...args, out: path.join(home, 'runs', 'fresh'), defaults };
-  assert.throws(() => createRunState({ ...fresh, activityId: changed.activityId }), /同时填写 -Inventory/);
+  assert.equal(createRunState({ ...fresh, activityId: changed.activityId }).state.inventory, 260);
   const override = createRunState({ ...fresh, ...changed });
   assert.equal(override.state.activityId, '91000999');
   assert.equal(override.state.inventory, 320);
   assert.throws(() => createRunState({ ...fresh, inventory: '2e2' }), /正整数/);
   assert.throws(() => createRunState({ ...fresh, activityId: 'not-an-id', inventory: 260 }), /数字活动 ID/);
+});
+
+test('the command saves defaults separately and a parameterless run uses the configured brand', t => {
+  const home = sandbox(t);
+  const configFile = path.join(home, 'config.json');
+  const config = {
+    version: 1, viewport: { width: 1920, height: 1080 }, nodePath: process.execPath,
+    pwshPath: path.join(home, 'pwsh.exe'), runtimeDir: path.join(home, 'runtime'),
+    brands: {
+      xiaocang: { port: 19335, executable: path.join(home, 'msedge.exe'), profileDir: path.join(home, 'edge'), expectedAccount: 'demo-edge' },
+      lexinyi: { port: 19334, executable: path.join(home, 'chrome.exe'), profileDir: path.join(home, 'chrome'), expectedAccount: 'demo-chrome' },
+    },
+  };
+  atomicJson(configFile, config);
+  const run = (...args) => spawnSync(process.execPath, [path.join(__dirname, '..', 'run.cjs'), ...args], {
+    encoding: 'utf8', env: { ...process.env, MEITUAN_SHENQUAN_HOME: home },
+  });
+  const initial = run('--phase', 'configure', '--brand', 'xiaocang', '--activity-id', '91000123', '--inventory', '260');
+  assert.equal(initial.status, 0, initial.stderr);
+  const changed = run('--phase', 'configure', '--inventory', '270');
+  assert.equal(changed.status, 0, changed.stderr);
+  assert.deepEqual(JSON.parse(changed.stdout), { brand: 'xiaocang', activityId: '91000123', inventory: 270 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(configFile, 'utf8')).brands, config.brands);
+  const previous = path.join(home, 'runs', 'previous');
+  atomicJson(path.join(home, 'active-run', 'xiaocang.json'), { runId: 'previous', runDir: previous });
+  const blocked = run();
+  assert.equal(blocked.status, 1, blocked.stderr);
+  assert.match(blocked.stderr, /原流程尚未核实/);
+  assert.ok(blocked.stderr.includes(previous));
 });
 
 test('old run records recover recorded inventory and require confirmation when it was never recorded', t => {

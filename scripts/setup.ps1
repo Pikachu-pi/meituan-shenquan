@@ -141,7 +141,7 @@ if (-not $sqHarness) {
     Invoke-SqChecked 'Browser Harness' $sqVenvPython @('-m','pip','--disable-pip-version-check','install','browser-harness==0.1.13')
     $sqHarness = Find-SqHarness; if (-not $sqHarness) { throw 'Browser Harness 安装后校验失败。' }
 }
-$sqConfig = [ordered]@{version=1;home=$sqHome;nodePath=$sqNode;pwshPath=$sqPwsh;runtimeDir=$sqRuntime;harnessPath=$sqHarness;cliPath=$sqCli;viewport=@{width=1920;height=1080};activityId=$sqPrevious.activityId;inventory=$sqPrevious.inventory;brands=@{
+$sqConfig = [ordered]@{version=1;home=$sqHome;nodePath=$sqNode;pwshPath=$sqPwsh;runtimeDir=$sqRuntime;harnessPath=$sqHarness;cliPath=$sqCli;viewport=@{width=1920;height=1080};brand=$sqPrevious.brand;activityId=$sqPrevious.activityId;inventory=$sqPrevious.inventory;brands=@{
     xiaocang=@{port=$XiaocangPort;executable=$sqEdge;profileDir=(Join-Path $sqHome 'profiles\xiaocang');expectedAccount=$XiaocangAccount.Trim()}
     lexinyi=@{port=$LexinyiPort;executable=$sqChrome;profileDir=(Join-Path $sqHome 'profiles\lexinyi');expectedAccount=$LexinyiAccount.Trim()}
 }}

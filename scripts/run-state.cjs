@@ -64,9 +64,6 @@ function createRunState({ home, out, brand, account, activityId, inventory, defa
       state.inventory = originalInventory ?? requestedInventory;
     } else {
       if (receiptOnly) throw Error('请用 -RunDir 指定原运行目录以核对回执');
-      if (requestedId !== undefined && requestedId !== String(defaults.activityId ?? '') && requestedInventory === undefined) {
-        throw Error('使用新的活动 ID 时，请同时填写 -Inventory');
-      }
       state.activityId = requestedId ?? normalizeActivityId(defaults.activityId);
       state.inventory = requestedInventory ?? normalizeInventory(defaults.inventory);
     }
@@ -112,4 +109,4 @@ function createRunState({ home, out, brand, account, activityId, inventory, defa
   return { state, save, step, checkPending, beginIntent, resolveIntent, completeCycle };
 }
 
-module.exports = { atomicJson, acquireLock, createRunState };
+module.exports = { atomicJson, acquireLock, createRunState, normalizeActivityId, normalizeInventory };
