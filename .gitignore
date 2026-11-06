@@ -1,0 +1,9 @@
+/evals/
+/node_modules/
+/config.json
+/profiles/
+/runs/
+/locks/
+/pending/
+/active-run/
+*.log

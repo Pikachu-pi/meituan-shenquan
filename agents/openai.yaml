@@ -1,0 +1,4 @@
+interface:
+  display_name: "meituan-shenquan"
+  short_description: "专用浏览器静默执行小仓与乐心宜神券取消重报、下载报名明细及核对原门店恢复"
+  default_prompt: "使用 $meituan-shenquan 按我指定的中台和提交范围执行神券流程，先核对账号和全部门店。"
