@@ -4,10 +4,17 @@
 
 ## 快速开始
 
-1. 在 GitHub 选择 **Code → Download ZIP**，解压到固定目录。
-2. 双击 [scripts/install.cmd](scripts/install.cmd)，填写两个中台的美团商家账号。
-3. 分别打开桌面的 Edge、Chrome 登录快捷方式。登录对应中台后，关闭专用浏览器窗口。
-4. 在 PowerShell 7 中进入解压目录，运行前置检查。
+安装 Git 后，在命令提示符或现有 PowerShell 中进入准备存放项目的目录，运行以下命令。
+
+```bat
+git clone https://github.com/Pikachu-pi/meituan-shenquan.git
+cd meituan-shenquan
+.\scripts\install.cmd
+```
+
+安装器先检测 PowerShell 7，缺失时通过 Winget 安装，然后继续配置依赖。按提示填写两个中台的商家账号。
+
+分别打开桌面的 Edge、Chrome 登录快捷方式。登录对应中台后，关闭专用浏览器窗口。打开 PowerShell 7，在仓库目录中运行前置检查。
 
 ```powershell
 & .\scripts\Invoke-Shenquan.ps1 -Brand lexinyi -Mode VerifyLogin
