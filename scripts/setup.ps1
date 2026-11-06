@@ -55,7 +55,7 @@ function Find-SqPython {
             }
         } catch {}
     }
-    foreach ($candidate in @((Find-SqCommand 'python.exe'), (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'), (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'))) {
+    foreach ($candidate in @((Find-SqCommand 'python.exe'), (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'), (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'), (Join-Path $env:ProgramFiles 'Python312\python.exe'))) {
         if (Test-SqVersion $candidate ([version]'3.11.0')) { return $candidate }
     }
     return $null
@@ -72,9 +72,9 @@ function Install-SqWinget([string]$Id) {
     & $winget install --id $Id --exact --source winget --accept-package-agreements --accept-source-agreements --disable-interactivity
     if ($LASTEXITCODE -ne 0) { throw "winget 安装 $Id 失败，退出码 $LASTEXITCODE。" }
 }
-function Invoke-SqChecked([string]$Executable, [string[]]$Arguments) {
+function Invoke-SqChecked([string]$Component, [string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "依赖安装失败，退出码 $LASTEXITCODE。已保留浏览器资料。" }
+    if ($LASTEXITCODE -ne 0) { throw "安装 $Component 失败，退出码 $LASTEXITCODE。根据上方错误处理后，重新运行 install.cmd。" }
 }
 function Find-SqHarness {
     foreach ($candidate in @((Find-SqCommand 'browser-harness.exe'), (Join-Path $sqHome 'harness\Scripts\browser-harness.exe'))) {
@@ -125,23 +125,23 @@ if (-not $sqCoreInstalled) {
     [IO.Directory]::CreateDirectory($sqRuntime) | Out-Null
     Copy-Item -LiteralPath (Join-Path $sqAssets 'runtime-package.json') -Destination (Join-Path $sqRuntime 'package.json')
     Copy-Item -LiteralPath (Join-Path $sqAssets 'runtime-package-lock.json') -Destination (Join-Path $sqRuntime 'package-lock.json')
-    Invoke-SqChecked $sqNpm @('ci','--prefix',$sqRuntime,'--ignore-scripts','--no-audit','--no-fund')
+    Invoke-SqChecked 'Playwright 运行库' $sqNpm @('ci','--prefix',$sqRuntime,'--ignore-scripts','--no-audit','--no-fund')
 }
 if (-not $sqCli) {
     $sqTools = Join-Path $sqHome 'tools'; [IO.Directory]::CreateDirectory($sqTools) | Out-Null
     Copy-Item -LiteralPath (Join-Path $sqAssets 'cli-package.json') -Destination (Join-Path $sqTools 'package.json')
     Copy-Item -LiteralPath (Join-Path $sqAssets 'cli-package-lock.json') -Destination (Join-Path $sqTools 'package-lock.json')
-    Invoke-SqChecked $sqNpm @('ci','--prefix',$sqTools,'--ignore-scripts','--no-audit','--no-fund')
+    Invoke-SqChecked 'Playwright CLI' $sqNpm @('ci','--prefix',$sqTools,'--ignore-scripts','--no-audit','--no-fund')
     $sqCli = Find-SqCli; if (-not $sqCli) { throw 'Playwright CLI 安装后校验失败。' }
 }
 if (-not $sqHarness) {
     $sqVenv = Join-Path $sqHome 'harness'
-    Invoke-SqChecked $sqPython @('-m','venv',$sqVenv)
+    Invoke-SqChecked 'Browser Harness 虚拟环境' $sqPython @('-m','venv',$sqVenv)
     $sqVenvPython = Join-Path $sqVenv 'Scripts\python.exe'
-    Invoke-SqChecked $sqVenvPython @('-m','pip','--disable-pip-version-check','install','browser-harness==0.1.13')
+    Invoke-SqChecked 'Browser Harness' $sqVenvPython @('-m','pip','--disable-pip-version-check','install','browser-harness==0.1.13')
     $sqHarness = Find-SqHarness; if (-not $sqHarness) { throw 'Browser Harness 安装后校验失败。' }
 }
-$sqConfig = [ordered]@{version=1;home=$sqHome;nodePath=$sqNode;pwshPath=$sqPwsh;runtimeDir=$sqRuntime;harnessPath=$sqHarness;cliPath=$sqCli;viewport=@{width=1920;height=1080};activityId='80763916';inventory=400;brands=@{
+$sqConfig = [ordered]@{version=1;home=$sqHome;nodePath=$sqNode;pwshPath=$sqPwsh;runtimeDir=$sqRuntime;harnessPath=$sqHarness;cliPath=$sqCli;viewport=@{width=1920;height=1080};activityId=$sqPrevious.activityId;inventory=$sqPrevious.inventory;brands=@{
     xiaocang=@{port=$XiaocangPort;executable=$sqEdge;profileDir=(Join-Path $sqHome 'profiles\xiaocang');expectedAccount=$XiaocangAccount.Trim()}
     lexinyi=@{port=$LexinyiPort;executable=$sqChrome;profileDir=(Join-Path $sqHome 'profiles\lexinyi');expectedAccount=$LexinyiAccount.Trim()}
 }}

@@ -5,13 +5,31 @@ const crypto = require('node:crypto');
 const { assertAllStores } = require('./store-scope.cjs');
 const { parseCsv, storeIds, originalStoreDiff } = require('./data.cjs');
 
+const INVENTORY_PROMPT = /^请输入\s*(\d+)\s*[-–—~～至到]\s*(\d+)\s*间的正整数$/;
+
+function activityTitle(text, idLabel) {
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (idLabel) {
+    const idLine = lines.findIndex(line => idLabel.test(line));
+    return idLine > 0 ? lines[idLine - 1] : undefined;
+  }
+  return lines.find(line => /^【美团神券】.+/.test(line));
+}
+
+function messageMatchesActivity(text, id, title) {
+  const ids = [...text.matchAll(/\bID\s*[:：]\s*(\d+)/gi)];
+  if (ids.length) return ids.some(match => match[1] === id);
+  return Boolean(title && text.includes(`【${title}】活动`));
+}
+
 function createWorkflow({ page, settings, brand, state, out, save, step, beginIntent, resolveIntent, completeCycle }) {
-const config = { ...settings, account: settings.brands[brand].expectedAccount };
-const activityId = settings.activityId;
+const account = settings.brands[brand].expectedAccount;
+const { activityId, inventory } = state;
+const activityLabel = new RegExp(`活动\\s*ID\\s*[:：]\\s*${activityId}(?!\\d)`);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn, timeout = 30000) { const end = Date.now() + timeout; let last; do { try { const result = await fn(); if (result) return result; } catch (e) { last = e; } await sleep(250); } while (Date.now() < end); throw Error(`State wait timed out${last ? ': ' + last.message : ''}`); }
 async function frame(part) { return until(() => page.frames().find(f => f !== page.mainFrame() && f.url().includes(part))); }
-async function identity() { await until(async () => { const label = page.locator('.acctinfo-container .txt'); return await label.count() === 1 && (await label.innerText()).trim() === config.account; }, 20000); }
+async function identity() { await until(async () => { const label = page.locator('.acctinfo-container .txt'); return await label.count() === 1 && (await label.innerText()).trim() === account; }, 20000); }
 async function shot(name) { await page.screenshot({ path: path.join(out, name + '.png'), timeout: 10000 }); }
 async function closeMessages() { const close = page.locator('i.roo-icon-close[style*="position: fixed"]'); if (await close.isVisible().catch(() => false)) { await close.click(); await close.waitFor({ state: 'hidden' }); } }
 async function messages() {
@@ -21,15 +39,37 @@ async function messages() {
   await page.locator('.normal-msg-card').filter({ hasText: '商家账号' }).first().waitFor({ state: 'visible' });
 }
 function messageTime(text) { const m = text.match(/于(\d{4})年(\d{2})月(\d{2})日(\d{2}):(\d{2}):(\d{2})/); return m ? Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}+08:00`) : NaN; }
+function rememberActivityTitle(title) {
+  if (!title) throw Error(`活动 ${activityId} 的名称或神券页面格式无法识别`);
+  if (state.activityTitle && state.activityTitle !== title) throw Error(`活动 ${activityId} 的名称与原记录不一致`);
+  if (!state.activityTitle) { state.activityTitle = title; save(); }
+}
+function exportedActivityTitle(text) {
+  return text.match(/下载的神券活动(.+?)[（(]\s*id\s*[:：]\s*\d+\s*[）)]/i)?.[1].trim();
+}
+function savedActivityTitle() {
+  if (state.activityTitle) return state.activityTitle;
+  const exportNote = path.join(out, 'before-cancel-export-message.txt');
+  if (fs.existsSync(exportNote)) {
+    const text = fs.readFileSync(exportNote, 'utf8');
+    const title = exportedActivityTitle(text);
+    if (title && matchesMessage(text, 0)) return title;
+  }
+  const registerNote = path.join(out, 'register-after-submit.txt');
+  if (fs.existsSync(registerNote)) return activityTitle(fs.readFileSync(registerNote, 'utf8'));
+}
+function matchesMessage(text, since, title) {
+  return text.includes(`商家账号${account}于`) && messageTime(text) >= since - 2000 && messageMatchesActivity(text, activityId, title);
+}
 async function currentMessage(title, since, timeout = 120000) {
   const end = Date.now() + timeout;
+  const name = title === '请查收神券报名明细' ? undefined : savedActivityTitle();
   do {
     await messages();
     const cards = page.locator('.normal-msg-card').filter({ hasText: title });
     for (let i = 0; i < await cards.count(); i++) {
       const card = cards.nth(i); const text = await card.innerText();
-      const activityMatches = text.includes(activityId) || (title !== '请查收神券报名明细' && text.includes('阶梯膨胀招商邀您报名-便利店闪电仓V7.1'));
-      if (text.includes(`商家账号${config.account}于`) && activityMatches && messageTime(text) >= since - 2000) return { card, text };
+      if (matchesMessage(text, since, name)) return { card, text };
     }
     await closeMessages(); await sleep(1500);
   } while (Date.now() < end);
@@ -48,13 +88,13 @@ async function list(tab) {
   await f.getByRole('button', { name: '查询', exact: true }).click();
   await until(async () => {
     const text = await f.locator('body').innerText();
-    return !text.includes('正在加载') && (text.includes(`活动ID：${activityId}`) || text.includes('暂无报名活动'));
-  });
+    return !text.includes('正在加载') && (activityLabel.test(text) || text.includes('暂无报名活动'));
+  }).catch(error => { throw Error(`查询活动 ${activityId} 超时，请核对活动 ID 和页面`, { cause: error }); });
   return f;
 }
 async function details({ allowEmpty = false } = {}) {
   const f = await list('已报名');
-  const card = f.locator('.sgyx-shop-invite-card').filter({ hasText: activityId });
+  const card = f.locator('.sgyx-shop-invite-card').filter({ hasText: activityLabel });
   if (await card.count() === 0 && allowEmpty) return null;
   if (await card.count() !== 1) throw Error('Expected exactly one registered activity card');
   await card.getByRole('button', { name: '报名详情', exact: true }).click();
@@ -78,7 +118,9 @@ async function exportCsv(label, d) {
   const [popup] = await Promise.all([page.waitForEvent('popup'), msg.card.locator('.normal-msg-card__head-title').click()]);
   await popup.waitForLoadState('domcontentloaded');
   const u = new URL(popup.url()); const content = u.searchParams.get('content1') || '';
-  if (!content.includes(`商家账号${config.account}于`) || !content.includes(activityId) || messageTime(content) < since - 2000) throw Error('Download page does not belong to this export');
+  if (!matchesMessage(content, since)) throw Error('Download page does not belong to this export');
+  const title = exportedActivityTitle(msg.text);
+  if (title) rememberActivityTitle(title);
   const link = u.searchParams.get('downloadUrl'); if (!link || new URL(link).hostname !== 'dpurl.cn') throw Error('Unexpected download host');
   const file = await page.request.get(link, { timeout: 45000, maxRetries: 2 }); const bytes = await file.body();
   if (file.status() !== 200 || !(file.headers()['content-type'] || '').includes('csv')) throw Error('Download is not a successful CSV');
@@ -88,8 +130,13 @@ async function exportCsv(label, d) {
   step(label + '-csv-downloaded', { count: ids.length, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
   await popup.close(); await closeMessages(); return { rows, ids };
 }
-async function prepareCancel() {
+async function prepareCancel({ checkRegistration = false } = {}) {
   if (state.cancelIntent) throw Error('Existing cancellation intent; inspect its receipt before another operation');
+  if (checkRegistration) {
+    await openRegistrationForm();
+    state.registrationChecked = true;
+    save();
+  }
   const d = await details({ allowEmpty: true });
   if (!d) {
     state.cancelIds = []; state.cancelCount = 0;
@@ -112,6 +159,7 @@ async function prepareCancel() {
 async function cancel() {
   if (state.cancelIntent?.skipped) { step('cancel-not-needed', { count: 0 }); return; }
   if (state.cancelIntent || !state.cancelIds?.length) throw Error('Cancellation is not a fresh prepared operation');
+  if (!state.registrationChecked) throw Error('请先重新准备取消，校验本次报名表单和库存');
   await assertAllStores(page); await identity(); const d = await frame('/shenquan/detailPc');
   if ((await d.locator('textarea').inputValue()) !== state.cancelIds.join(',')) throw Error('Cancellation input changed');
   await d.getByRole('button', { name: '确认取消', exact: true }).waitFor();
@@ -129,33 +177,62 @@ async function verifyCancel() {
   state.cancelIntent.outcome = 'confirmed'; state.cancelReceipt = msg.text; save(); resolveIntent('cancel');
   await shot('cancel-receipt'); step('cancel-confirmed', { successful: Number(m[1]), failed: Number(m[2]) }); await closeMessages();
 }
+async function assertRegistrationActivity(create) {
+  const title = savedActivityTitle();
+  if (!title) throw Error(`无法确认当前报名表单对应活动 ${activityId}，请重新准备报名`);
+  await create.getByText(title, { exact: true }).waitFor({ state: 'visible' });
+}
+async function assertInventory(field) {
+  if (await field.inputValue() !== String(inventory)) throw Error(`库存未保留为本次指定的 ${inventory} 张`);
+}
+async function openRegistrationForm() {
+  let f = await list('待报名');
+  let card = f.locator('.sgyx-shop-invite-card').filter({ hasText: activityLabel });
+  let action = '立即报名';
+  if (await card.count() === 0) {
+    f = await list('已报名');
+    card = f.locator('.sgyx-shop-invite-card').filter({ hasText: activityLabel });
+    action = '继续报名';
+  }
+  if (await card.count() !== 1) throw Error(`找不到活动 ${activityId} 的报名入口`);
+  await card.getByRole('button', { name: action, exact: true }).click();
+  const intro = await frame('/merchant/infoNew/pc');
+  await intro.locator('body').filter({ hasText: activityLabel }).waitFor({ state: 'visible' });
+  rememberActivityTitle(activityTitle(await intro.locator('body').innerText(), activityLabel));
+  const agreement = intro.locator('input[type="checkbox"]');
+  if (!await agreement.isChecked()) await intro.locator('label.roo-checkbox').click();
+  if (!await agreement.isChecked()) throw Error('Agreement checkbox did not become checked');
+  await intro.getByRole('button', { name: '立即报名', exact: true }).click();
+  const create = await frame('/shenquan/createPc');
+  await assertRegistrationActivity(create);
+  const field = create.getByPlaceholder(INVENTORY_PROMPT);
+  await field.waitFor({ state: 'visible' }).catch(error => { throw Error(`活动 ${activityId} 的库存输入框不符合当前支持的神券表单`, { cause: error }); });
+  const range = (await field.getAttribute('placeholder'))?.match(INVENTORY_PROMPT);
+  if (!range) throw Error(`无法读取活动 ${activityId} 的库存范围`);
+  const [, min, max] = range;
+  if (inventory < Number(min) || inventory > Number(max)) throw Error(`活动 ${activityId} 的库存范围为 ${min}–${max} 张，本次填写 ${inventory} 张`);
+  await field.fill(String(inventory));
+  await field.blur();
+  await assertInventory(field);
+  await create.getByText('按门店名称', { exact: true }).waitFor({ state: 'visible' });
+  await create.getByRole('button', { name: '提交报名', exact: true }).waitFor({ state: 'visible' });
+  return { create, field };
+}
 async function prepareRegister() {
   await assertAllStores(page);
   if (state.cancelIntent && state.cancelIntent.outcome !== 'confirmed') throw Error('Cancellation outcome is unknown');
   if (state.registerIntent) throw Error('Registration was already submitted or has unknown outcome');
   const existingCreate = page.frames().find(f => f.url().includes('/shenquan/createPc'));
   if (existingCreate && state.registerCount && await existingCreate.getByRole('button', { name: /^确\s*定$/ }).isVisible().catch(() => false)) {
+    await assertRegistrationActivity(existingCreate);
     const selected = (await existingCreate.locator('body').innerText()).match(/已选门店\s*[（(](\d+)[)）]/);
     if (!selected || Number(selected[1]) !== state.registerCount) throw Error('Prepared selection changed');
     await existingCreate.getByRole('button', { name: /^确\s*定$/ }).click();
     await existingCreate.getByRole('button', { name: /^确\s*定$/ }).waitFor({ state: 'hidden' });
-    if (await existingCreate.getByPlaceholder('请输入180-400间的正整数').inputValue() !== String(config.inventory)) throw Error('Inventory changed');
-    await shot('register-ready'); step('register-ready', { count: state.registerCount, inventory: config.inventory }); return;
+    await assertInventory(existingCreate.getByPlaceholder(INVENTORY_PROMPT));
+    await shot('register-ready'); step('register-ready', { count: state.registerCount, inventory }); return;
   }
-  let intro = page.frames().find(f => f.url().includes('/merchant/infoNew/pc'));
-  if (!intro) {
-    let f = await list('待报名'); let card = f.locator('.sgyx-shop-invite-card').filter({ hasText: activityId });
-    if (await card.count()) await card.getByRole('button', { name: '立即报名', exact: true }).click();
-    else { f = await list('已报名'); card = f.locator('.sgyx-shop-invite-card').filter({ hasText: activityId }); await card.getByRole('button', { name: '继续报名', exact: true }).click(); }
-    intro = await frame('/merchant/infoNew/pc');
-  }
-  await until(async () => (await intro.locator('body').innerText()).includes(activityId));
-  const agreement = intro.locator('input[type="checkbox"]');
-  if (!await agreement.isChecked()) await intro.locator('label.roo-checkbox').click();
-  if (!await agreement.isChecked()) throw Error('Agreement checkbox did not become checked');
-  await intro.getByRole('button', { name: '立即报名', exact: true }).click();
-  const create = await frame('/shenquan/createPc');
-  const inventory = create.getByPlaceholder('请输入180-400间的正整数'); await inventory.waitFor(); await inventory.fill(String(config.inventory));
+  const { create, field } = await openRegistrationForm();
   await assertAllStores(page);
   await create.getByText('按门店名称', { exact: true }).click();
   await create.getByText('全选所有页', { exact: true }).click();
@@ -164,16 +241,17 @@ async function prepareRegister() {
   await shot('register-selected');
   await create.getByRole('button', { name: /^确\s*定$/ }).click();
   await create.getByRole('button', { name: /^确\s*定$/ }).waitFor({ state: 'hidden' });
-  if (await inventory.inputValue() !== String(config.inventory)) throw Error('Inventory changed');
+  await assertInventory(field);
   await create.getByRole('button', { name: '提交报名', exact: true }).waitFor();
-  save(); await shot('register-ready'); step('register-ready', { count: state.registerCount, inventory: config.inventory });
+  save(); await shot('register-ready'); step('register-ready', { count: state.registerCount, inventory });
 }
 async function register() {
   await assertAllStores(page);
   if (state.registerIntent || !state.registerCount) throw Error('Registration is not a fresh prepared operation');
   if (state.cancelIntent?.outcome !== 'confirmed') throw Error('Execution requires confirmed cancellation');
   await closeMessages(); await identity(); const create = await frame('/shenquan/createPc');
-  if (await create.getByPlaceholder('请输入180-400间的正整数').inputValue() !== String(config.inventory)) throw Error('Inventory changed');
+  await assertRegistrationActivity(create);
+  await assertInventory(create.getByPlaceholder(INVENTORY_PROMPT));
   if (!(await create.locator('body').innerText()).includes(`${state.registerCount}家按门店名称`)) throw Error('Selected store count changed');
   state.registerIntent = { at: Date.now(), count: state.registerCount, outcome: 'prepared', finalClicked: false }; save();
   await create.getByRole('button', { name: '提交报名', exact: true }).click();
@@ -189,15 +267,16 @@ async function confirmRegister() {
   if (!state.registerIntent || state.registerIntent.finalClicked || state.registerIntent.outcome === 'confirmed') throw Error('No fresh final registration confirmation');
   if (state.cancelIntent?.outcome !== 'confirmed') throw Error('Cancellation is not confirmed');
   await closeMessages(); await identity(); const create = await frame('/shenquan/createPc');
+  await assertRegistrationActivity(create);
   const text = await create.locator('body').innerText();
-  if (!text.includes('信息确认') || !new RegExp(`${config.inventory}\\s*张\\s*${state.registerCount}\\s*家`).test(text)) throw Error('Final registration count/inventory confirmation mismatch');
+  if (!text.includes('信息确认') || !new RegExp(`(?:^|\\D)${inventory}\\s*张\\s*${state.registerCount}\\s*家`).test(text)) throw Error('Final registration count/inventory confirmation mismatch');
   await create.getByRole('button', { name: '确认提交', exact: true }).waitFor();
   await create.getByRole('button', { name: '确认提交', exact: true }).click({ trial: true });
   await shot('register-final-confirmation');
   await assertAllStores(page);
   state.registerIntent.at = Date.now(); state.registerIntent.finalClicked = true; state.registerIntent.outcome = 'unknown'; save(); beginIntent('register', state.registerIntent);
   await create.getByRole('button', { name: '确认提交', exact: true }).click();
-  step('register-final-clicked', { count: state.registerCount, inventory: config.inventory });
+  step('register-final-clicked', { count: state.registerCount, inventory });
   await verifyRegister();
 }
 async function verifyRegister() {
@@ -213,7 +292,7 @@ async function verifyRegister() {
 async function verify() {
   const d = await details(); const result = await exportCsv('after-register', d);
   const missing = originalStoreDiff(state.cancelIds || [], result.rows);
-  const invalid = result.rows.filter(r => r['状态'] !== '生效中' || r['每日神券库存'] !== `${config.inventory}张`);
+  const invalid = result.rows.filter(r => r['状态'] !== '生效中' || r['每日神券库存'] !== `${inventory}张`);
   state.verification = { activeCount: result.ids.length, missingOriginalIds: missing, invalidRows: invalid }; save();
   step('readback-verified', state.verification);
   if (missing.length || invalid.length) throw Error('Registration readback has missing stores or invalid inventory/status');
@@ -227,18 +306,18 @@ async function resultDetails() {
   if (fs.existsSync(cached) && fs.existsSync(sourceFile)) {
     const source = JSON.parse(fs.readFileSync(sourceFile, 'utf8'));
     bytes = fs.readFileSync(cached);
-    if (source.account !== config.account || source.activityId !== activityId || source.submittedAt !== state.registerIntent.at || source.sha256 !== crypto.createHash('sha256').update(bytes).digest('hex')) throw Error('Cached result provenance mismatch');
+    if (source.account !== account || source.activityId !== activityId || source.submittedAt !== state.registerIntent.at || source.sha256 !== crypto.createHash('sha256').update(bytes).digest('hex')) throw Error('Cached result provenance mismatch');
   }
   else {
   const msg = await currentMessage('报名结果通知', state.registerIntent.at);
   const [popup] = await Promise.all([page.waitForEvent('popup'), msg.card.locator('.normal-msg-card__head-title').click()]);
   await popup.waitForLoadState('domcontentloaded'); const u = new URL(popup.url()); const content = u.searchParams.get('content1') || '';
-  if (!content.includes(`商家账号${config.account}于`) || !content.includes('阶梯膨胀招商邀您报名-便利店闪电仓V7.1') || messageTime(content) < state.registerIntent.at - 2000) throw Error('Registration detail identity mismatch');
+  if (!matchesMessage(content, state.registerIntent.at, savedActivityTitle())) throw Error('Registration detail identity mismatch');
   const link = u.searchParams.get('downloadUrl'); if (!link || new URL(link).hostname !== 'dpurl.cn') throw Error('Unexpected result download host');
   const r = await page.request.get(link, { timeout: 45000, maxRetries: 2 }); bytes = await r.body();
   if (r.status() !== 200 || !(r.headers()['content-type'] || '').includes('csv')) throw Error('Registration detail is not CSV');
   fs.writeFileSync(cached, bytes);
-  fs.writeFileSync(sourceFile, JSON.stringify({ account: config.account, activityId, submittedAt: state.registerIntent.at, sha256: crypto.createHash('sha256').update(bytes).digest('hex') }, null, 2));
+  fs.writeFileSync(sourceFile, JSON.stringify({ account, activityId, submittedAt: state.registerIntent.at, sha256: crypto.createHash('sha256').update(bytes).digest('hex') }, null, 2));
   await popup.close(); await closeMessages();
   }
   const rows = parseCsv(bytes.toString('utf8')); const successful = rows.filter(r => r['报名结果'] === '成功'); const failed = rows.filter(r => r['报名结果'] === '失败');
@@ -250,4 +329,4 @@ async function resultDetails() {
 }
 return { identity, frame, shot, closeMessages, prepareCancel, cancel, verifyCancel, prepareRegister, register, confirmRegister, verifyRegister, resultDetails, verify };
 }
-module.exports = { createWorkflow };
+module.exports = { createWorkflow, activityTitle, messageMatchesActivity };

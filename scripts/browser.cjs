@@ -14,7 +14,6 @@ function validateConfig(config) {
   if (config.version !== 1 || config.viewport?.width !== 1920 || config.viewport?.height !== 1080) throw Error('Unsupported configuration or viewport');
   if (!config.nodePath || !config.pwshPath || !config.runtimeDir) throw Error('Runtime paths are missing; run setup.ps1');
   if (![config.nodePath, config.pwshPath, config.runtimeDir].every(p => path.isAbsolute(p))) throw Error('Runtime paths must be absolute');
-  if (config.activityId !== '80763916' || config.inventory !== 400) throw Error('This verified workflow supports only activity 80763916 and inventory 400');
   for (const [brand, exe] of Object.entries(BRANDS)) {
     const selected = config.brands?.[brand];
     if (!selected || !Number.isInteger(selected.port) || selected.port < 1024 || selected.port > 65535) throw Error(`Invalid ${brand} port`);

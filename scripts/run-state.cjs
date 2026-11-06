@@ -26,14 +26,51 @@ function acquireLock(home, brand, runDir) {
   };
 }
 
-function createRunState({ home, out, brand, account, activityId, phase }) {
+function normalizeActivityId(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') throw Error('请用 -ActivityId 或本机配置填写有效的数字活动 ID');
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) throw Error('活动 ID 过长，请用数字字符串填写');
+  const id = String(value);
+  if (!/^\d+$/.test(id) || !/[1-9]/.test(id)) throw Error('请用 -ActivityId 或本机配置填写有效的数字活动 ID');
+  return id;
+}
+
+function normalizeInventory(value) {
+  const inventory = Number(value);
+  if ((typeof value !== 'string' && typeof value !== 'number') || !/^\d+$/.test(String(value)) || !Number.isSafeInteger(inventory) || inventory < 1) {
+    throw Error('请用 -Inventory 或本机配置填写每日库存，必须是正整数');
+  }
+  return inventory;
+}
+
+function createRunState({ home, out, brand, account, activityId, inventory, defaults = {}, phase }) {
   const statePath = path.join(out, 'state.json');
   const pendingPath = path.join(home, 'pending', `${brand}.json`);
   const cyclePath = path.join(home, 'active-run', `${brand}.json`);
   const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : {
-    runId: crypto.randomUUID(), brand, account, activityId, createdAt: new Date().toISOString(), steps: [],
+    runId: crypto.randomUUID(), brand, account, createdAt: new Date().toISOString(), steps: [],
   };
-  if (state.brand !== brand || state.account !== account || state.activityId !== activityId) throw Error('运行记录与当前账号、品牌或活动不一致');
+  if (state.brand !== brand || state.account !== account) throw Error('运行记录与当前账号或中台不一致');
+  const receiptOnly = ['verify-cancel', 'verify-register', 'result-details'].includes(phase);
+  if (phase !== 'check-scope') {
+    const requestedId = activityId === undefined ? undefined : normalizeActivityId(activityId);
+    const requestedInventory = inventory === undefined ? undefined : normalizeInventory(inventory);
+    if (state.activityId) {
+      state.activityId = normalizeActivityId(state.activityId);
+      const savedInventory = state.inventory ?? state.steps.findLast(item => ['register-ready', 'register-final-clicked'].includes(item.name))?.inventory;
+      const originalInventory = savedInventory == null ? undefined : normalizeInventory(savedInventory);
+      if (requestedId !== undefined && requestedId !== state.activityId) throw Error('活动 ID 与原运行不一致');
+      if (requestedInventory !== undefined && originalInventory !== undefined && requestedInventory !== originalInventory) throw Error('库存与原运行不一致');
+      if (originalInventory === undefined && requestedInventory === undefined && !receiptOnly) throw Error('旧记录缺少库存，请核对原值后用 -Inventory 指定');
+      state.inventory = originalInventory ?? requestedInventory;
+    } else {
+      if (receiptOnly) throw Error('请用 -RunDir 指定原运行目录以核对回执');
+      if (requestedId !== undefined && requestedId !== String(defaults.activityId ?? '') && requestedInventory === undefined) {
+        throw Error('使用新的活动 ID 时，请同时填写 -Inventory');
+      }
+      state.activityId = requestedId ?? normalizeActivityId(defaults.activityId);
+      state.inventory = requestedInventory ?? normalizeInventory(defaults.inventory);
+    }
+  }
   const save = () => atomicJson(statePath, state);
   function step(name, data = {}) {
     const item = { name, at: new Date().toISOString(), ...data }; state.steps.push(item);
@@ -55,8 +92,9 @@ function createRunState({ home, out, brand, account, activityId, phase }) {
   function beginIntent(operation, intent) {
     if (fs.existsSync(pendingPath)) throw Error('已有未决提交，拒绝重复派发');
     if (fs.existsSync(cyclePath) && JSON.parse(fs.readFileSync(cyclePath, 'utf8')).runId !== state.runId) throw Error('其他流程尚未恢复，拒绝提交');
-    atomicJson(cyclePath, { runId: state.runId, brand, account, activityId, runDir: out });
-    atomicJson(pendingPath, { runId: state.runId, brand, account, activityId, operation, at: intent.at, count: intent.count, runDir: out });
+    const identity = { runId: state.runId, brand, account, activityId: state.activityId, inventory: state.inventory, runDir: out };
+    atomicJson(cyclePath, identity);
+    atomicJson(pendingPath, { ...identity, operation, at: intent.at, count: intent.count });
   }
   function resolveIntent(operation) {
     if (!fs.existsSync(pendingPath)) return;

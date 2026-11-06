@@ -1,6 +1,6 @@
 # meituan-shenquan
 
-在 Windows 上检查美团神券报名、导出门店明细，并按需取消后重新报名。支持活动 `80763916`，报名库存为每日 400 张。
+在 Windows 上检查美团神券报名、导出门店明细，并按需取消后重新报名。活动 ID 和每日库存由本次指令或本机配置指定。
 
 ## 快速开始
 
@@ -18,7 +18,9 @@ cd meituan-shenquan
 
 ```powershell
 & .\scripts\Invoke-Shenquan.ps1 -Brand lexinyi -Mode VerifyLogin
-& .\scripts\Invoke-Shenquan.ps1 -Brand lexinyi -Phase preflight
+$activityId = Read-Host '活动 ID'
+$inventory = Read-Host '每日库存'
+& .\scripts\Invoke-Shenquan.ps1 -Brand lexinyi -ActivityId $activityId -Inventory $inventory -Phase preflight
 ```
 
 小仓用 `xiaocang`，乐心宜用 `lexinyi`。日常运行默认无头。`preflight` 导出并校验 CSV，准备取消和报名表单，停在提交前。实际取消和重报使用 `execute`。
