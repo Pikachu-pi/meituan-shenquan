@@ -185,8 +185,9 @@ export async function runEgoLive(options, browser, connect = openMerchant) {
   if (options.action === 'register' && (options.workbook ? !options.workbook.sha256 : allIds.length > 0)) {
     throw Error('报名清单和门店范围不一致');
   }
-  if (options.action !== 'check' && (!options.activityTitle?.startsWith('【美团神券】') || (!verifyOnly && options.submit !== true))) {
-    throw Error('正式操作需要已核对的神券活动名称及明确提交参数');
+  if (options.activityTitle && !options.activityTitle.startsWith('【美团神券】')) throw Error('活动名称不是已支持的神券活动');
+  if (options.action !== 'check' && !verifyOnly && options.submit !== true) {
+    throw Error('正式操作需要明确提交参数');
   }
 
   const activityId = normalizeActivityId(options.activityId);
@@ -198,8 +199,9 @@ export async function runEgoLive(options, browser, connect = openMerchant) {
   await mkdir(out, { recursive: true });
   const release = options.action === 'check' ? () => {} : acquireLock(home, brand, out);
   const identity = { runId: options.runId, runDir: resolve(out), brand, account: options.account, activityId,
-    activityTitle: options.activityTitle, operation: options.action, inventory, engine: 'ego-lite' };
-  const sameRun = saved => Object.entries(identity).every(([key, value]) => saved[key] === value);
+    operation: options.action, inventory, engine: 'ego-lite' };
+  const sameRun = (saved, title) => saved.activityTitle === title &&
+    Object.entries(identity).every(([key, value]) => saved[key] === value);
   let merchant;
   let state;
   let saveResult = false;
@@ -209,14 +211,15 @@ export async function runEgoLive(options, browser, connect = openMerchant) {
   };
   try {
     const previous = await load(statePath);
+    const intent = await load(intentPath);
+    const title = options.activityTitle || (verifyOnly ? previous?.activityTitle || intent?.activityTitle : undefined);
     if (previous && (previous.runId !== options.runId || previous.brand !== brand ||
       previous.account !== options.account || previous.activityId !== activityId ||
       previous.action !== options.action || (options.action !== 'check' &&
-        (previous.activityTitle !== options.activityTitle || previous.inventory !== inventory)))) {
+        ((title && previous.activityTitle !== title) || previous.inventory !== inventory)))) {
       throw Error('原目录属于其他运行');
     }
     const pending = options.action === 'check' ? undefined : await load(pendingPath);
-    const intent = await load(intentPath);
     if (intent) {
       const allEligible = options.action === 'register' && !options.workbook;
       const validIds = ids => Array.isArray(ids) && ids.every(id => typeof id === 'string' && /^\d+$/.test(id)) && new Set(ids).size === ids.length;
@@ -225,9 +228,10 @@ export async function runEgoLive(options, browser, connect = openMerchant) {
         : !intent.selectionMode && validIds(intent.ids) && intent.ids.length &&
           (intent.count == null || intent.count === intent.ids.length) &&
           (options.action !== 'register' || intent.ids.every(id => registrationIds.includes(id)));
-      if (!sameRun(intent) || !Number.isSafeInteger(intent.at) || !validSelection) throw Error('原提交意图身份或门店范围不符');
+      if (!title?.startsWith('【美团神券】') || !sameRun(intent, title) ||
+        !Number.isSafeInteger(intent.at) || !validSelection) throw Error('原提交意图身份或门店范围不符');
     }
-    if (pending && (!verifyOnly || !sameRun(pending) || !intent || pending.at !== intent.at)) {
+    if (pending && (!verifyOnly || !sameRun(pending, title) || !intent || pending.at !== intent.at)) {
       throw Error('该中台有未决提交，请核对原运行目录 '+pending.runDir);
     }
     if (intent && !verifyOnly) throw Error('该运行已有提交意图，请用 Verify 核对原任务');
@@ -241,7 +245,7 @@ export async function runEgoLive(options, browser, connect = openMerchant) {
       return previous;
     }
 
-    state = { ...previous, ...options, activityId, inventory, registrationIds, excludedIds };
+    state = { ...previous, ...options, activityId, activityTitle: title, inventory, registrationIds, excludedIds };
     if (state.action === 'register') state.selectionMode = options.workbook ? 'store-id' : 'all-eligible';
     if (verifyOnly && previous?.profileId) state.profileId = previous.profileId;
     delete state.error;
@@ -262,15 +266,17 @@ export async function runEgoLive(options, browser, connect = openMerchant) {
     } else {
       const selection = state.action === 'register' ? await prepareRegistration(merchant, state, record) : await prepareCancellation(merchant, record);
       if (selection.count) {
+        if (!state.activityTitle?.startsWith('【美团神券】')) throw Error('提交前未核对指定活动名称');
         const { ids, count } = selection;
         const control = { action: state.action, account: state.account, activityTitle: state.activityTitle, ids, count, inventory };
         await merchant.page.evaluate(checkFinalControl, control);
         await merchant.save('提交前');
         const at = Date.now();
-        const newIntent = { ...identity, at, ...selection };
+        const submittedIdentity = { ...identity, activityTitle: state.activityTitle };
+        const newIntent = { ...submittedIdentity, at, ...selection };
         await writeFile(intentPath, JSON.stringify(newIntent, null, 2), { flag: 'wx' });
         await mkdir(join(home, 'pending'), { recursive: true });
-        await writeFile(pendingPath, JSON.stringify({ ...identity, at, count }, null, 2), { flag: 'wx' });
+        await writeFile(pendingPath, JSON.stringify({ ...submittedIdentity, at, count }, null, 2), { flag: 'wx' });
         record({ stage: 'pending', intended: count, intentAt: new Date(at).toISOString() });
         if (state.action === 'register') {
           await merchant.page.evaluate(checkFinalControl, { ...control, activate: true });
@@ -288,7 +294,7 @@ export async function runEgoLive(options, browser, connect = openMerchant) {
     record({ stage: 'complete' });
     if (await load(intentPath)) {
       const marker = await load(pendingPath);
-      if (marker && !sameRun(marker)) throw Error('未决记录归属改变');
+      if (marker && !sameRun(marker, state.activityTitle)) throw Error('未决记录归属改变');
       if (marker) await unlink(pendingPath);
     }
     try {

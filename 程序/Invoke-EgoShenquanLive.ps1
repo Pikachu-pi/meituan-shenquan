@@ -81,35 +81,25 @@ if ($Verify) {
     }
     if ($Action -eq 'Register') {
         if ($sqExclusions.mode -notin @('list','none')) { throw '首次报名请先核验并保存固定剔除设置。' }
-        $useDefault = !$ExclusionWorkbook
         if ($UseExclusionFolder) { $ExclusionWorkbook = Select-EgoInboxWorkbook -Folder $sqInbox }
-        if ($useDefault) {
-            if (!$ExclusionWorkbook) { $ExclusionWorkbook = Select-EgoInboxWorkbook -Folder $sqInbox -AllowEmpty:($sqExclusions.mode -eq 'none') }
-            if ($ExclusionWorkbook -and $sqExclusions.mode -eq 'none') {
-                throw '当前设置为无剔除，但目录有表。请确认后保存固定名单，或移出该表。'
-            }
-        }
+        if (!$ExclusionWorkbook) { $ExclusionWorkbook = Select-EgoInboxWorkbook -Folder $sqInbox -AllowEmpty }
         if ($ExclusionWorkbook) {
             $list = Read-SqWorkbook $ExclusionWorkbook
             $sqPlan = $list.plan
             $sqWorkbook = $list.workbook
-            if ($useDefault -and ($sqWorkbook.name -cne $sqExclusions.workbook.name -or $sqWorkbook.sha256 -ne $sqExclusions.workbook.sha256)) {
-                throw '固定剔除表已更改，请重新核验并保存名单设置。'
-            }
         }
     }
     $sqRuns = @(foreach ($center in $sqBrands) {
         $saved = $sqConfig.centers[$center]
         $explicitProfile = $sqProfiles[$center]
         $name = if ($explicitProfile) { $explicitProfile.Trim() } else { $saved.profileName }
-        $profileId = if (!$explicitProfile -or $name -ceq $saved.profileName) { $saved.profileId }
+        $profileId = if (!$name) { $saved.profileId }
         $account = if ($sqAccounts[$center]) { $sqAccounts[$center].Trim() } else { $saved.account }
         $id = if ($ActivityId) { $ActivityId } else { $saved.activityId }
-        $title = if ($ActivityTitle) { $ActivityTitle.Trim() } elseif ($id -eq $saved.activityId) { $saved.activityTitle }
+        $title = if ($ActivityTitle) { $ActivityTitle.Trim() }
         $stock = if ($Inventory) { $Inventory } else { $saved.inventory }
         if ((!$name -and !$profileId) -or !$account -or !$id) { throw "请提供 $center 的 Ego Lite 资料名、预期美团账号和活动 ID，或先做只读绑定。" }
         if ($Action -ne 'Check' -and !$saved.verifiedAt) { throw "请先完成 $center 的首次只读核验并保存设置。" }
-        if ($Action -ne 'Check' -and !$title) { throw "请先只读核验 $center 的本次活动，或显式提供 -ActivityTitle。" }
         if (($SaveConfig -or $Action -eq 'Register') -and !$stock) { throw "请先确认 $center 的每日库存，再用 -Inventory 保存或报名。" }
         @{
             action=$Action.ToLowerInvariant(); brand=$center; submit=[bool]$Submit; home=$sqHome

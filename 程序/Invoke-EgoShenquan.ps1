@@ -38,19 +38,15 @@ if ($Resume) {
     $sqRuns = @(Get-Content -LiteralPath $sqManifest -Raw | ConvertFrom-Json -AsHashtable)
 } else {
     if (Test-Path -LiteralPath $sqManifest) { throw '运行目录已使用。请指定新目录，或用 -Resume 继续原预演。' }
+    $sqEgoConfig = Join-Path $sqHome 'ego-config.json'
+    $sqBindings = if (Test-Path -LiteralPath $sqEgoConfig) {
+        $config = Get-Content -LiteralPath $sqEgoConfig -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+        if ($config.version -ne 1 -or $config.centers -isnot [System.Collections.IDictionary]) { throw '本机 Ego Lite 配置格式不支持。' }
+        $config.centers
+    } else { @{} }
     $sqLocalConfig = Join-Path $sqHome 'config.json'
-    if (Test-Path -LiteralPath $sqLocalConfig) {
-        $sqDefaults = Get-Content -LiteralPath $sqLocalConfig -Raw | ConvertFrom-Json
-        if (!$ActivityId) { $ActivityId = $sqDefaults.activityId }
-        if (!$Inventory) { $Inventory = $sqDefaults.inventory }
-        if (!$XiaocangAccount) { $XiaocangAccount = $sqDefaults.brands.xiaocang.expectedAccount }
-        if (!$LexinyiAccount) { $LexinyiAccount = $sqDefaults.brands.lexinyi.expectedAccount }
-    }
-    if (!$ActivityId -or !$Inventory) { throw '请传入 -ActivityId 和 -Inventory，或先配置本机业务默认值。' }
-    if ($Brand -in @('both','xiaocang') -and !$XiaocangAccount) { throw '请用 -XiaocangAccount 指定小仓美团账号。' }
-    if ($Brand -in @('both','lexinyi') -and !$LexinyiAccount) { throw '请用 -LexinyiAccount 指定乐心宜美团账号。' }
-    if ($Brand -eq 'both' -and ($XiaocangProfile -eq $LexinyiProfile -or $XiaocangAccount -eq $LexinyiAccount)) {
-        throw '两个中台需要各自的 Ego Lite 资料和美团账号。'
+    $sqDefaults = if (Test-Path -LiteralPath $sqLocalConfig) {
+        Get-Content -LiteralPath $sqLocalConfig -Raw | ConvertFrom-Json -AsHashtable
     }
     $sqBrands = if ($Brand -eq 'both') { @('xiaocang', 'lexinyi') } else { @($Brand) }
     $sqChoices = [int][bool]$NoExclusions + [int][bool]$UseExclusionFolder + [int][bool]$ExclusionWorkbook
@@ -72,18 +68,32 @@ if ($Resume) {
         Write-Host "本次剔除清单 $($sqFile.Name)"
     }
     $sqRuns = @(foreach ($sqBrand in $sqBrands) {
+        $binding = $sqBindings[$sqBrand]
+        $profileParam = if ($sqBrand -eq 'xiaocang') { 'XiaocangProfile' } else { 'LexinyiProfile' }
+        $profile = if ($PSBoundParameters.ContainsKey($profileParam) -or !$binding.profileName) {
+            Get-Variable -Name $profileParam -ValueOnly
+        } else { $binding.profileName }
+        $account = if ($sqBrand -eq 'xiaocang') { $XiaocangAccount } else { $LexinyiAccount }
+        $legacyBrand = if ($sqDefaults.brands) { $sqDefaults.brands[$sqBrand] }
+        if (!$account) { $account = $binding.account ?? $legacyBrand.expectedAccount }
+        $id = if ($ActivityId) { $ActivityId } else { $binding.activityId ?? $sqDefaults.activityId }
+        $stock = if ($Inventory) { $Inventory } else { $binding.inventory ?? $sqDefaults.inventory }
+        if (!$account -or !$id -or !$stock) { throw "请先配置 $sqBrand 的商家账号、活动 ID 和每日库存。" }
         @{
             brand = $sqBrand
-            profileName = if ($sqBrand -eq 'xiaocang') { $XiaocangProfile } else { $LexinyiProfile }
-            account = if ($sqBrand -eq 'xiaocang') { $XiaocangAccount } else { $LexinyiAccount }
-            activityId = $ActivityId
-            inventory = $Inventory
+            profileName = $profile
+            account = $account
+            activityId = $id
+            inventory = $stock
             exclusionWorkbook = $sqWorkbookRecord
             excludedCount = if ($sqPlan[$sqBrand]) { $sqPlan[$sqBrand].excluded.Count } else { 0 }
             registrationIds = @($sqPlan[$sqBrand].included | Where-Object { $_ })
             taskName = "shenquan-$sqBrand-$([guid]::NewGuid().ToString('N').Substring(0,12))"
         }
     })
+    if ($sqRuns.Count -eq 2 -and ($sqRuns[0].profileName -eq $sqRuns[1].profileName -or $sqRuns[0].account -eq $sqRuns[1].account)) {
+        throw '两个中台需要各自的 Ego Lite 资料和美团账号。'
+    }
     [IO.Directory]::CreateDirectory($sqOut) | Out-Null
     [IO.File]::WriteAllText($sqManifest, (ConvertTo-Json -InputObject $sqRuns -Depth 4), [Text.UTF8Encoding]::new($false))
 }

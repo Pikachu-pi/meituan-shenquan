@@ -30,7 +30,10 @@ cd meituan-shenquan
 
 按本次需要运行对应命令。取消作用于指定活动当前全部报名。单中台把 `both` 换成 `xiaocang` 或 `lexinyi`。
 
-固定表留在「剔除清单」，每次自动使用。更新表格或改为无剔除后，重新做只读核验并保存对应的 `-ExclusionChoice`。固定表被移走、修改或出现多张时，报名会停下等核对。更换活动 ID 或每日库存时，同样用 `Check -SaveConfig` 更新日常设置。
+首次配置完成后，日常直接使用下列文件当前保存的信息。
+
+- **活动 ID、每日库存**：编辑本机 `%LOCALAPPDATA%\MeituanShenquan\ego-config.json`，找到 `centers.xiaocang` 或 `centers.lexinyi`，修改 `activityId` 和 `inventory`。活动名称按新 ID 在平台读取。需要更换账号或资料时，修改同一处的 `account` 和 `profileName`。
+- **剔除名单**：固定表留在「剔除清单」，编辑或替换后下次自动使用。目录留空时全选平台可报名门店。多张表或格式错误时停止并提示处理。
 
 ## 记录与回执
 
