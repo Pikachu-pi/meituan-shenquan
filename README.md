@@ -9,7 +9,7 @@ git clone https://github.com/Pikachu-pi/meituan-shenquan.git
 cd meituan-shenquan
 ```
 
-双击 `程序\安装.cmd`，然后在 Ego Lite 登录要用的中台。缺少 Ego Lite 时从 [Ego Lite 官网](https://lite.ego.app/) 安装。
+双击 `程序\安装.cmd`。已有组件会直接复用，缺少 PowerShell 7 时通过 Winget 补装，缺少 Ego Lite 时从官方站点下载安装程序并校验签名。按安装窗口提示完成首次设置，必要时重开终端后再运行安装检查。最后在 Ego Lite 登录要用的中台。 [Ego Lite Windows 安装说明](https://lite.ego.app/document/en/docs/windows/quick-start)
 
 首次运行前，一次确认中台、Ego Lite 资料名、商家账号、活动 ID、每日库存和是否有固定剔除表。有表时放入项目根目录的[剔除清单](剔除清单/)，只留这一张。表需有「门店ID」或「美团ID」和「不报神券」两列，列出全部报名候选门店；「不报神券」填「是」或「不报」表示剔除。双中台加「中台」列，填「小仓」或「乐心宜」。
 
